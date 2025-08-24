@@ -20,6 +20,8 @@
 package crdt
 
 import (
+	"sync"
+
 	"github.com/yorkie-team/yorkie/pkg/document/time"
 	"github.com/yorkie-team/yorkie/pkg/resource"
 )
@@ -42,6 +44,7 @@ type Root struct {
 	gcElementPairMap map[string]ElementPair
 	gcNodePairMap    map[string]GCPair
 	docSize          resource.DocSize
+	mu               sync.RWMutex // Protects concurrent access to element maps
 }
 
 // NewRoot creates a new instance of Root.
@@ -93,11 +96,16 @@ func (r *Root) Object() *Object {
 
 // FindByCreatedAt returns the element of given creation time.
 func (r *Root) FindByCreatedAt(createdAt *time.Ticket) Element {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.elementMap[createdAt.Key()]
 }
 
 // RegisterElement registers the given element to hash table.
 func (r *Root) RegisterElement(element Element) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.elementMap[element.CreatedAt().Key()] = element
 	r.docSize.Live.Add(element.DataSize())
 
@@ -112,6 +120,9 @@ func (r *Root) RegisterElement(element Element) {
 
 // deregisterElement deregister the given element from hash tables.
 func (r *Root) deregisterElement(element Element) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	count := 0
 
 	deregister := func(elem Element) {
@@ -137,6 +148,9 @@ func (r *Root) deregisterElement(element Element) int {
 
 // RegisterRemovedElementPair register the given element pair to hash table.
 func (r *Root) RegisterRemovedElementPair(parent Container, elem Element) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	r.docSize.GC.Add(elem.DataSize())
 	r.docSize.Live.Sub(elem.DataSize())
 	// NOTE(hackerwins): When an element is removed, parent sets the removedAt
@@ -152,6 +166,14 @@ func (r *Root) RegisterRemovedElementPair(parent Container, elem Element) {
 // DocSize returns the size of the document.
 func (r *Root) DocSize() resource.DocSize {
 	return r.docSize
+}
+
+// HasRemovedElementPair checks if the given element is tracked in gcElementPairMap.
+func (r *Root) HasRemovedElementPair(createdAt *time.Ticket) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, exists := r.gcElementPairMap[createdAt.Key()]
+	return exists
 }
 
 // DeepCopy copies itself deeply.

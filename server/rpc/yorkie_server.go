@@ -18,6 +18,7 @@ package rpc
 
 import (
 	"context"
+	"fmt"
 	gotime "time"
 
 	"connectrpc.com/connect"
@@ -32,6 +33,7 @@ import (
 	"github.com/yorkie-team/yorkie/server/backend"
 	"github.com/yorkie-team/yorkie/server/backend/messagebroker"
 	"github.com/yorkie-team/yorkie/server/backend/pubsub"
+	"github.com/yorkie-team/yorkie/server/backend/sync"
 	"github.com/yorkie-team/yorkie/server/clients"
 	"github.com/yorkie-team/yorkie/server/documents"
 	"github.com/yorkie-team/yorkie/server/logging"
@@ -150,6 +152,16 @@ func (s *yorkieServer) AttachDocument(
 	}
 
 	project := projects.From(ctx)
+
+	// Add a document creation lock for new documents to prevent race conditions
+	// during simultaneous attachment
+	var docCreateLocker sync.Locker
+	if !pack.IsAttached() {
+		docCreateLocker = s.backend.Lockers.Locker(
+			sync.NewKey(fmt.Sprintf("doc-create-%s-%s", project.ID, pack.DocumentKey)),
+		)
+		defer docCreateLocker.Unlock()
+	}
 
 	docLocker := s.backend.Lockers.LockerWithRLock(packs.DocKey(project.ID, pack.DocumentKey))
 	defer docLocker.RUnlock()

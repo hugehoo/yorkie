@@ -18,6 +18,7 @@ package document
 
 import (
 	"errors"
+	"fmt"
 	gosync "sync"
 
 	"github.com/yorkie-team/yorkie/api/converter"
@@ -174,7 +175,12 @@ func (d *InternalDocument) ApplyChangePack(pack *change.Pack, disableGC bool) er
 		}
 	}
 
-	// 02. Remove local changes applied to server.
+	// 02. Validate element tracking consistency after applying changes
+	if err := d.validateElementTracking(); err != nil {
+		return err
+	}
+
+	// 03. Remove local changes applied to server.
 	for d.HasLocalChanges() {
 		c := d.localChanges[0]
 		if c.ClientSeq() > pack.Checkpoint.ClientSeq {
@@ -183,7 +189,7 @@ func (d *InternalDocument) ApplyChangePack(pack *change.Pack, disableGC bool) er
 		d.localChanges = d.localChanges[1:]
 	}
 
-	// 03. Update the checkpoint.
+	// 04. Update the checkpoint.
 	d.checkpoint = d.checkpoint.Forward(pack.Checkpoint)
 
 	if !disableGC && pack.VersionVector != nil && !hasSnapshot {
@@ -267,6 +273,28 @@ func (d *InternalDocument) DocSize() resource.DocSize {
 // RootObject returns the root object.
 func (d *InternalDocument) RootObject() *crdt.Object {
 	return d.root.Object()
+}
+
+// validateElementTracking validates that all removed elements are properly tracked
+// in the gcElementPairMap to prevent the race condition issue.
+func (d *InternalDocument) validateElementTracking() error {
+	// Traverse all elements in the document
+	var validationErr error
+	d.root.Object().Descendants(func(elem crdt.Element, parent crdt.Container) bool {
+		// Check if element is marked as removed
+		if elem.RemovedAt() != nil {
+			// Verify it exists in gcElementPairMap
+			if !d.root.HasRemovedElementPair(elem.CreatedAt()) {
+				validationErr = fmt.Errorf(
+					"element %s is marked as removed but not tracked in gcElementPairMap",
+					elem.CreatedAt().Key(),
+				)
+				return true // stop traversal
+			}
+		}
+		return false
+	})
+	return validationErr
 }
 
 func (d *InternalDocument) applySnapshot(snapshot []byte, vector time.VersionVector) error {

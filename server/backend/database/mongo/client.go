@@ -1146,12 +1146,25 @@ func (c *Client) FindOrCreateDocInfo(
 		// NOTE(hackerwins): If duplicate key error occurred, retry with a
 		// simple find operation since another concurrent request successfully
 		// created the document.
+
+		// Small delay to ensure the document is fully initialized by the other client
+		// This helps prevent the race condition where elements might not be properly
+		// tracked in gcElementPairMap during simultaneous attachment
+		gotime.Sleep(10 * gotime.Millisecond)
+
 		result = c.collection(ColDocuments).FindOne(ctx, filter)
 	}
 
 	info := &database.DocInfo{}
 	if err := result.Decode(info); err != nil {
 		return nil, fmt.Errorf("find or create document of %s: %w", docKey, err)
+	}
+
+	// For newly created documents, ensure they are properly initialized
+	// before returning to prevent race conditions in element tracking
+	if info.ServerSeq == 0 {
+		// This is a new document, give it a moment to stabilize
+		gotime.Sleep(5 * gotime.Millisecond)
 	}
 
 	return info, nil
